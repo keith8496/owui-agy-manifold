@@ -14,3 +14,14 @@ Run `python -m unittest discover -s tests -v` with Python 3.11+ and the Open Web
 4. Verify sandbox enforcement independently using a disposable fixture with no sensitive data before broadening access. The temporary working directory and denial of ACP permission callbacks do not establish that native AGY tools are disabled or cannot access other paths.
 
 The Pipe creates a new process per turn and rejects requests beyond two active turns per loaded worker. It supports one plain-text user message per request; history, system prompts, files and tools are out of scope. The base picker ID does not change with effort; the exact upstream model variant is an admin setting for now. Do not put credentials in valves, chat, or test logs. The next tool milestone is a synthetic-memory round trip authorized as the current user, with a second-user denial test before using real memories.
+
+## OWUI acceptance results
+
+Tested in the target OWUI deployment with AGY installed in the container:
+
+- Incremental text streaming: pass.
+- Stop and AGY subprocess cleanup: pass.
+- Recovery: soft fail by design. The next prompt sent in the same conversation was rejected with `ACP POC supports one user message; history and system prompts are unsupported.` Start a new chat for the next turn; multi-message history remains out of scope for this build.
+- Strict model selection: pass; an invalid upstream model did not silently produce an answer from a fallback model.
+
+Retest recovery after implementing explicit history support. Do not classify the current response as an ACP/process recovery failure: the observed error is the POC's deliberate request-shape guard.
