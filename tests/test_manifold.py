@@ -54,6 +54,51 @@ class ManifoldTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(frames[-1], 'data: [DONE]\n\n')
         self.assertIn('model-b', [r.get('params', {}).get('modelId') for r in self.records()])
 
+    async def test_diagnostics_opt_in_and_sanitized(self):
+        self.assertFalse(self.pipe.valves.DEBUG_ACP_EVENTS)
+        self.assertFalse(self.pipe.valves.DEBUG_INSPECT_HELLO_WORLD)
+        with patch.object(manifold._LOG, 'warning') as log:
+            await self.collect('diagnostics')
+            log.assert_not_called()
+        self.pipe.valves.DEBUG_ACP_EVENTS = True
+        self.pipe.valves.DEBUG_INSPECT_HELLO_WORLD = True
+        with self.assertLogs('owui_agy_acp', level='WARNING') as captured:
+            await self.collect('diagnostics')
+        output = str(captured.output)
+        self.assertIn('update=tool_call_update status=failed', output)
+        self.assertIn('workspace canary hello_world.txt regular_file=True', output)
+        self.assertNotIn('secret-marker', output)
+        self.assertNotIn('canary payload', output)
+
+    async def test_canary_not_inspected_by_default(self):
+        with patch.object(manifold._LOG, 'warning') as log:
+            await self.collect('diagnostics')
+            self.assertFalse(any('workspace canary' in str(call) for call in log.call_args_list))
+
+    async def test_diagnostic_permission(self):
+        self.pipe.valves.DEBUG_ACP_EVENTS = True
+        with self.assertLogs('owui_agy_acp', level='WARNING') as captured:
+            await self.collect('permission')
+        self.assertIn('permission requested', str(captured.output))
+        self.assertNotIn('unsafe', str(captured.output))
+
+    async def test_agy_log_file_opt_in(self):
+        self.assertFalse(self.pipe.valves.DEBUG_AGY_LOG_FILE)
+        log_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__('shutil').rmtree(log_dir, ignore_errors=True))
+        self.pipe.valves.DEBUG_ACP_EVENTS = True
+        self.pipe.valves.DEBUG_AGY_LOG_FILE = True
+        self.pipe.valves.AGY_LOG_DIRECTORY = str(log_dir)
+        await self.collect('stream')
+        records = self.records()
+        args = next(r['argv'] for r in records if r.get('event') == 'started')
+        self.assertEqual(args[:2], ['acp', '--sandbox'])
+        self.assertIn('--log-file', args)
+        path = Path(args[args.index('--log-file') + 1])
+        self.assertEqual(path.parent, log_dir)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(path.stat().st_size, 0)
+
     async def test_model_error_never_prompts(self):
         frames = await self.collect('model_error')
         self.assertIn('did not accept', frames[0])

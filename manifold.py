@@ -6,9 +6,11 @@ description: Experimental single-turn text streaming over an ACP subprocess.
 
 import asyncio
 import json
+import logging
 import os
 import re
 import signal
+import stat
 import tempfile
 import threading
 import time
@@ -18,6 +20,8 @@ from contextlib import suppress
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+
+_LOG = logging.getLogger("owui_agy_acp")
 
 _BASE_ID = "gemini-4-hydrogen"
 _SLOTS = threading.BoundedSemaphore(2)  # Per loaded module in each OWUI worker.
@@ -42,8 +46,9 @@ def _child_env():
 
 
 class _ACP:
-    def __init__(self, proc):
+    def __init__(self, proc, debug=False):
         self.proc = proc
+        self.debug = debug
         self.session = None
         self.seq = 0
         self.prompt_pending = False
@@ -93,6 +98,8 @@ class _ACP:
                 if type(rpc_id) not in (str, int) and rpc_id is not None:
                     raise _Failure("ACP returned an invalid request ID.")
                 if method == "session/request_permission":
+                    if self.debug:
+                        _LOG.warning("ACP diagnostic: permission requested; rejecting")
                     params = msg.get("params")
                     options = params.get("options") if isinstance(params, dict) else None
                     reject = next((item["optionId"] for item in options
@@ -113,6 +120,16 @@ class _ACP:
                 if isinstance(params, dict) and params.get("sessionId") == self.session:
                     update = params.get("update")
                     if isinstance(update, dict):
+                        if self.debug:
+                            kind = update.get("sessionUpdate")
+                            status = update.get("status")
+                            safe_kinds = ("tool_call", "tool_call_update", "agent_message_chunk",
+                                          "agent_thought_chunk", "plan")
+                            safe_status = ("pending", "in_progress", "completed", "failed")
+                            if kind != "agent_message_chunk":
+                                _LOG.warning("ACP diagnostic: update=%s status=%s",
+                                             kind if kind in safe_kinds else "other",
+                                             status if status in safe_status else "none")
                         return False, update
 
     async def rpc(self, method, params):
@@ -216,7 +233,8 @@ async def _dispose(proc, acp):
             transport.close()
 
 
-async def _run_turn(executable, model, text, emit):
+async def _run_turn(executable, model, text, emit, debug=False, inspect_canary=False,
+                    debug_log_file=False, log_directory=""):
     if not _SLOTS.acquire(blocking=False):
         return None, "ACP is busy; retry shortly."
     workdir = spawn = proc = acp = None
@@ -224,14 +242,23 @@ async def _run_turn(executable, model, text, emit):
     try:
         async with asyncio.timeout(_TURN_TIMEOUT):
             workdir = tempfile.TemporaryDirectory(prefix="owui-agy-")
+            agy_log = None
+            if debug and debug_log_file:
+                if not os.path.isabs(log_directory) or not os.path.isdir(log_directory):
+                    raise _Failure("Configure an existing absolute private directory for AGY debug logs.")
+                fd, agy_log = tempfile.mkstemp(prefix="agy-acp-", suffix=".log", dir=log_directory)
+                os.close(fd)
+                _LOG.warning("ACP diagnostic: AGY log file created at %s; it may contain sensitive data", agy_log)
             spawn = asyncio.create_task(asyncio.create_subprocess_exec(
-                executable, "acp", "--sandbox", cwd=workdir.name, env=_child_env(),
+                executable, "acp", "--sandbox", *(
+                    ["--log-file", agy_log] if agy_log else []
+                ), cwd=workdir.name, env=_child_env(),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL, start_new_session=True, limit=_MAX_FRAME,
             ))
             # Canceling during spawn must not orphan a child before we know its PID.
             proc = await asyncio.shield(spawn)
-            acp = _ACP(proc)
+            acp = _ACP(proc, debug)
             await acp.setup(workdir.name, model)
             finish = await acp.prompt(text, emit)
     except _Failure as exc:
@@ -241,6 +268,14 @@ async def _run_turn(executable, model, text, emit):
     except Exception:
         error = "ACP could not start or the connection failed."
     finally:
+        if debug and inspect_canary and workdir is not None:
+            try:
+                canary = os.stat(os.path.join(workdir.name, "hello_world.txt"), follow_symlinks=False)
+                found = stat.S_ISREG(canary.st_mode)
+            except (FileNotFoundError, NotADirectoryError, PermissionError):
+                found = False
+            _LOG.warning("ACP diagnostic: workspace canary hello_world.txt regular_file=%s", found)
+
         async def cleanup():
             try:
                 child = proc
@@ -273,7 +308,8 @@ def _sse(data):
     return "data: " + json.dumps(data, separators=(",", ":")) + "\n\n"
 
 
-async def _stream(executable, model, public_model, text):
+async def _stream(executable, model, public_model, text, debug=False, inspect_canary=False,
+                  debug_log_file=False, log_directory=""):
     # The producer's deadline still runs if a slow or abandoned consumer is
     # suspended at a yield. Keep its queue bounded independently of the pipes.
     chunks = asyncio.Queue(maxsize=8)
@@ -283,7 +319,8 @@ async def _stream(executable, model, public_model, text):
         await chunks.put(part)
         ready.set()
 
-    worker = asyncio.create_task(_run_turn(executable, model, text, emit))
+    worker = asyncio.create_task(_run_turn(executable, model, text, emit, debug, inspect_canary, debug_log_file,
+                                                log_directory))
     worker.add_done_callback(lambda _: ready.set())
     identity = {"id": "chatcmpl-" + uuid.uuid4().hex, "created": int(time.time()),
                 "object": "chat.completion.chunk", "model": public_model}
@@ -338,6 +375,10 @@ class Pipe:
     class Valves(BaseModel):
         AGY_EXECUTABLE: str = Field(default="agy", description="Executable name on PATH or absolute path.")
         ACTUAL_MODEL: str = Field(default="gemini-4-hydrogen-medium", description="Exact AGY model ID.")
+        DEBUG_ACP_EVENTS: bool = Field(default=False, description="Log sanitized ACP tool and permission event types/statuses; test environments only.")
+        DEBUG_INSPECT_HELLO_WORLD: bool = Field(default=False, description="Before cleanup, log whether hello_world.txt is a regular file in the temporary workspace; disposable tests only.")
+        DEBUG_AGY_LOG_FILE: bool = Field(default=False, description="Write an AGY ACP log in AGY_LOG_DIRECTORY. Logs may contain sensitive data; disposable tests only.")
+        AGY_LOG_DIRECTORY: str = Field(default="", description="Existing private absolute directory for opt-in AGY logs; manage retention and deletion manually.")
 
     def __init__(self):
         self.type = "manifold"
@@ -363,5 +404,8 @@ class Pipe:
                 or (os.path.sep in executable and not os.path.isabs(executable))):
             raise _Failure("Configure an AGY executable name or absolute path.")
         text = _prompt_text(body)
-        return StreamingResponse(_stream(executable, model, public_model, text),
+        return StreamingResponse(_stream(executable, model, public_model, text, self.valves.DEBUG_ACP_EVENTS,
+                                                       self.valves.DEBUG_INSPECT_HELLO_WORLD,
+                                                       self.valves.DEBUG_AGY_LOG_FILE,
+                                                       self.valves.AGY_LOG_DIRECTORY),
                                  media_type="text/event-stream")
