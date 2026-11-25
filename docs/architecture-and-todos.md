@@ -7,8 +7,9 @@ Provide Antigravity models within Open WebUI through a native manifold backed by
 ## Current decisions
 
 - **OWUI interface:** Start with a Pipe manifold so ACP-backed models can appear in the OWUI model picker.
+- **Deliverable:** The final manifold must be a single Python file, without requiring additional project-owned Python modules at runtime. Tests and documentation can be separate; `agy` remains an external runtime prerequisite. Other runtime dependencies and whether a separately deployed service is acceptable remain to be decided.
 - **Agent transport:** Use `agy acp` by default. It is a bidirectional JSON-RPC protocol over stdin/stdout with sessions and structured events; both ACP and headless modes use stdio. Headless `stream-json` is a possible fallback only if a concrete ACP limitation justifies it.
-- **Core boundary:** Keep process/session management and ACP translation independent of the OWUI-specific adapter where practical.
+- **Core boundary:** Keep process/session management and ACP translation logically independent of the OWUI-specific adapter within the single-file deliverable where practical.
 - **Tool integration:** Do not assume ACP tool calls automatically execute OWUI tools. Investigate an explicit MCP adapter and prove authorization and result delivery before broadening tool access.
 - **Existing bridge:** Leave it intact during validation. It remains useful for independent OpenAI-compatible clients such as 9router; decide separately whether to retain, replace, or share core logic later.
 - **Safety defaults:** No silent model substitution. Deny tool/permission actions when a safe authorization or interactive approval path is unavailable. Keep per-user resource authorization intact; container co-location alone is not authorization.
@@ -36,6 +37,7 @@ Provide Antigravity models within Open WebUI through a native manifold backed by
 ## TODO
 
 - [ ] Pin the Open WebUI version/commit targeted by the first prototype and review the local Pipe/manifold contract.
+- [ ] Verify the final manifold can be installed and run as a single Python file, with its external prerequisites documented.
 - [ ] Confirm AGY ACP protocol/version, CLI installation, client identity behavior, and runtime availability in the intended OWUI deployment.
 - [ ] Decide process ownership: ACP workers inside OWUI versus a separately isolated service.
 - [ ] Specify account/profile ownership, credential persistence, multi-account routing, and revocation behavior.
