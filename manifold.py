@@ -10,7 +10,6 @@ import logging
 import os
 import re
 import signal
-import stat
 import tempfile
 import threading
 import time
@@ -233,7 +232,7 @@ async def _dispose(proc, acp):
             transport.close()
 
 
-async def _run_turn(executable, model, text, emit, debug=False, inspect_canary=False,
+async def _run_turn(executable, model, text, emit, debug=False,
                     debug_log_file=False, log_directory=""):
     if not _SLOTS.acquire(blocking=False):
         return None, "ACP is busy; retry shortly."
@@ -268,14 +267,6 @@ async def _run_turn(executable, model, text, emit, debug=False, inspect_canary=F
     except Exception:
         error = "ACP could not start or the connection failed."
     finally:
-        if debug and inspect_canary and workdir is not None:
-            try:
-                canary = os.stat(os.path.join(workdir.name, "hello_world.txt"), follow_symlinks=False)
-                found = stat.S_ISREG(canary.st_mode)
-            except (FileNotFoundError, NotADirectoryError, PermissionError):
-                found = False
-            _LOG.warning("ACP diagnostic: workspace canary hello_world.txt regular_file=%s", found)
-
         async def cleanup():
             try:
                 child = proc
@@ -308,7 +299,7 @@ def _sse(data):
     return "data: " + json.dumps(data, separators=(",", ":")) + "\n\n"
 
 
-async def _stream(executable, model, public_model, text, debug=False, inspect_canary=False,
+async def _stream(executable, model, public_model, text, debug=False,
                   debug_log_file=False, log_directory=""):
     # The producer's deadline still runs if a slow or abandoned consumer is
     # suspended at a yield. Keep its queue bounded independently of the pipes.
@@ -319,7 +310,7 @@ async def _stream(executable, model, public_model, text, debug=False, inspect_ca
         await chunks.put(part)
         ready.set()
 
-    worker = asyncio.create_task(_run_turn(executable, model, text, emit, debug, inspect_canary, debug_log_file,
+    worker = asyncio.create_task(_run_turn(executable, model, text, emit, debug, debug_log_file,
                                                 log_directory))
     worker.add_done_callback(lambda _: ready.set())
     identity = {"id": "chatcmpl-" + uuid.uuid4().hex, "created": int(time.time()),
@@ -376,7 +367,6 @@ class Pipe:
         AGY_EXECUTABLE: str = Field(default="agy", description="Executable name on PATH or absolute path.")
         ACTUAL_MODEL: str = Field(default="gemini-4-hydrogen-medium", description="Exact AGY model ID.")
         DEBUG_ACP_EVENTS: bool = Field(default=False, description="Log sanitized ACP tool and permission event types/statuses; test environments only.")
-        DEBUG_INSPECT_HELLO_WORLD: bool = Field(default=False, description="Before cleanup, log whether hello_world.txt is a regular file in the temporary workspace; disposable tests only.")
         DEBUG_AGY_LOG_FILE: bool = Field(default=False, description="Write an AGY ACP log in AGY_LOG_DIRECTORY. Logs may contain sensitive data; disposable tests only.")
         AGY_LOG_DIRECTORY: str = Field(default="", description="Existing private absolute directory for opt-in AGY logs; manage retention and deletion manually.")
 
@@ -405,7 +395,6 @@ class Pipe:
             raise _Failure("Configure an AGY executable name or absolute path.")
         text = _prompt_text(body)
         return StreamingResponse(_stream(executable, model, public_model, text, self.valves.DEBUG_ACP_EVENTS,
-                                                       self.valves.DEBUG_INSPECT_HELLO_WORLD,
                                                        self.valves.DEBUG_AGY_LOG_FILE,
                                                        self.valves.AGY_LOG_DIRECTORY),
                                  media_type="text/event-stream")

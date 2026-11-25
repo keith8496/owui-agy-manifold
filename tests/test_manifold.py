@@ -56,24 +56,15 @@ class ManifoldTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_diagnostics_opt_in_and_sanitized(self):
         self.assertFalse(self.pipe.valves.DEBUG_ACP_EVENTS)
-        self.assertFalse(self.pipe.valves.DEBUG_INSPECT_HELLO_WORLD)
         with patch.object(manifold._LOG, 'warning') as log:
             await self.collect('diagnostics')
             log.assert_not_called()
         self.pipe.valves.DEBUG_ACP_EVENTS = True
-        self.pipe.valves.DEBUG_INSPECT_HELLO_WORLD = True
         with self.assertLogs('owui_agy_acp', level='WARNING') as captured:
             await self.collect('diagnostics')
         output = str(captured.output)
         self.assertIn('update=tool_call_update status=failed', output)
-        self.assertIn('workspace canary hello_world.txt regular_file=True', output)
         self.assertNotIn('secret-marker', output)
-        self.assertNotIn('canary payload', output)
-
-    async def test_canary_not_inspected_by_default(self):
-        with patch.object(manifold._LOG, 'warning') as log:
-            await self.collect('diagnostics')
-            self.assertFalse(any('workspace canary' in str(call) for call in log.call_args_list))
 
     async def test_diagnostic_permission(self):
         self.pipe.valves.DEBUG_ACP_EVENTS = True

@@ -56,9 +56,6 @@ for line in sys.stdin:
                 send({"jsonrpc": "2.0", "method": "session/update", "params": {
                     "sessionId": "fake-session", "update": {"sessionUpdate": "tool_call_update",
                     "status": "failed", "title": "secret-marker", "content": "secret-marker"}}})
-            if scenario == "diagnostics":
-                with open(os.path.join(os.getcwd(), "hello_world.txt"), "w", encoding="utf-8") as stream:
-                    stream.write("canary payload")
             for text in ("hello ", "world"):
                 send({"jsonrpc": "2.0", "method": "session/update", "params": {
                     "sessionId": "fake-session", "update": {"sessionUpdate": "agent_message_chunk",
