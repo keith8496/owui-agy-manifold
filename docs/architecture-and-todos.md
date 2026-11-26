@@ -24,6 +24,8 @@ Provide Antigravity models within Open WebUI through a native manifold backed by
 - Verify AGY sandbox behavior in the actual container environment; a successful response does not demonstrate sandbox enforcement. Confirm the desired ACP client identity and account-specific model catalog.
 - Decide whether multi-account routing, account health/status, and admin controls are required in the manifold or remain elsewhere.
 
+See [session boundary](session-boundary.md) for the pinned-source review, proposed lifecycle invariants, and blockers. No persistent session or memory access is implemented.
+
 ## Proof-of-concept sequence
 
 1. Create a minimal manifold with a static model list and a single ACP-backed model.
