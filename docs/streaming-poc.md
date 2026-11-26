@@ -33,3 +33,7 @@ For a disposable test instance, enable the admin valve `DEBUG_ACP_EVENTS` and in
 To capture AGY diagnostics, create an existing private directory writable only by the OWUI runtime user. Set `AGY_LOG_DIRECTORY` to its absolute path and enable `DEBUG_AGY_LOG_FILE`. The Pipe passes `--log-file <unique-file>` to `agy acp --sandbox`; the log file is created mode 0600 and retained after the turn for manual inspection/removal. AGY logs may contain prompts, paths, tool details, or other sensitive information. Use only disposable test data, inspect locally, redact before sharing, and remove logs promptly. Both valves default off. Do not enable `--dangerously-skip-permissions` in the manifold.
 
 These diagnostics show activity, not proof of sandbox enforcement: a failed tool status does not reveal the cause or identify which path was accessed, and an absent event does not prove denial. Use isolated fixtures and independent observation for positive and negative controls. The POC does not capture stderr or preserve the temporary workspace.
+
+## Next-phase boundary
+
+The [session boundary decision](session-boundary.md) retains the single-message guard; session resumption and a memory round trip are not implemented. The synthetic source-handler spike is not a deployment acceptance test. Existing deployment results above apply to the unchanged streaming POC only.

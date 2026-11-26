@@ -118,3 +118,43 @@ class ManifoldTest(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(asyncio.CancelledError):
                     await task
         self.assert_reaped()
+
+    async def test_context_fields_do_not_unlock_history(self):
+        user = {'role': 'user', 'content': 'fixture'}
+        history = [user, {'role': 'assistant', 'content': 'fixture'}, user]
+        # Direct API clients can put arbitrary locators in the body. None grants resume.
+        for context in ({}, {'user_id': 'a', 'chat_id': 'x'},
+                        {'metadata': {'user_id': 'b', 'chat_id': 'x', 'message_id': 'y'}},
+                        {'regeneration_message_id': 'y'}, {'session_id': 'x'}):
+            with self.subTest(context=context), self.assertRaisesRegex(manifold._Failure, 'one user message'):
+                await self.pipe.pipe({**self.body, **context, 'messages': history})
+
+    async def test_unsupported_pipe_shapes(self):
+        cases = [({'messages': [{'role': 'system', 'content': 'fixture'}]}, {}),
+                 ({'messages': [{'role': 'system', 'content': 'fixture'}, *self.body['messages']]}, {}),
+                 ({'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': 'fixture'}]}]}, {}),
+                 ({}, {'__files__': [{'id': 'fixture'}]}), ({}, {'__tools__': {'fixture': {}}})]
+        for fields, injected in cases:
+            with self.subTest(fields=fields, injected=injected), self.assertRaises(manifold._Failure):
+                await self.pipe.pipe({**self.body, **fields}, **injected)
+
+    async def test_concurrent_and_retried_requests_always_start_fresh(self):
+        async def turn(pipe, label):
+            body = {**self.body, 'chat_id': 'same-locator',
+                    'messages': [{'role': 'user', 'content': label}]}
+            response = await pipe.pipe(body)
+            frames = [frame async for frame in response.body_iterator]
+            self.assertEqual(frames[-1], 'data: [DONE]\n\n')
+
+        with self.fake('stream'):
+            await asyncio.wait_for(asyncio.gather(turn(self.pipe, 'a'), turn(self.pipe, 'b')), 5)
+            replacement = manifold.Pipe()
+            replacement.valves = self.pipe.valves
+            await asyncio.wait_for(turn(replacement, 'a'), 5)
+        records = self.records()
+        self.assertEqual(sum(r.get('event') == 'started' for r in records), 3)
+        methods = [r.get('method') for r in records]
+        self.assertEqual(methods.count('session/new'), 3)
+        self.assertFalse({'session/load', 'session/resume'}.intersection(methods))
+        self.assertCountEqual([r['params']['prompt'][0]['text'] for r in records
+                               if r.get('method') == 'session/prompt'], ['a', 'b', 'a'])
